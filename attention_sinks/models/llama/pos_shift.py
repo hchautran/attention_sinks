@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
+import IPython
 
 __all__ = ["llama_pos_shift_attention_forward"]
 
@@ -56,6 +57,8 @@ def llama_pos_shift_attention_forward(
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
+    
+
 
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
