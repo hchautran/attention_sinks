@@ -28,13 +28,14 @@ DIM_TO_SLICE = {
 
 @dataclass
 class AttentionSinkKVCache:
-    attention_sink_size: int = 4
-    attention_sink_window_size: int = 1020
+    kv_init_size: int = 4
+    kv_window_size: int = 1020
     k_seq_dim: int = 2
     v_seq_dim: int = 2
+    kv_type:str = 'sink'
 
     def __post_init__(self):
-        self.cache_size = self.attention_sink_size + self.attention_sink_window_size
+        self.cache_size = self.kv_init_size + self.kv_window_size
         self.k_slice = DIM_TO_SLICE[self.k_seq_dim]
         self.v_slice = DIM_TO_SLICE[self.v_seq_dim]
 
@@ -48,15 +49,15 @@ class AttentionSinkKVCache:
             [
                 torch.cat(
                     [
-                        self.k_slice(k, 0, self.attention_sink_size),
-                        self.k_slice(k, seq_len - self.attention_sink_window_size, seq_len),
+                        self.k_slice(k, 0, self.kv_init_size),
+                        self.k_slice(k, seq_len - self.kv_window_size, seq_len),
                     ],
                     dim=self.k_seq_dim,
                 ),
                 torch.cat(
                     [
-                        self.v_slice(v, 0, self.attention_sink_size),
-                        self.v_slice(v, seq_len - self.attention_sink_window_size, seq_len),
+                        self.v_slice(v, 0, self.kv_init_size),
+                        self.v_slice(v, seq_len - self.kv_window_size, seq_len),
                     ],
                     dim=self.v_seq_dim,
                 ),
@@ -74,10 +75,10 @@ class AttentionSinkKVCache:
             [
                 torch.cat(
                     [
-                        self.k_slice(k, 0, self.attention_sink_size),
+                        self.k_slice(k, 0, self.kv_init_size),
                         self.k_slice(
                             k,
-                            seq_len - self.attention_sink_window_size + num_coming,
+                            seq_len - self.kv_window_size + num_coming,
                             seq_len,
                         ),
                     ],
@@ -85,10 +86,10 @@ class AttentionSinkKVCache:
                 ),
                 torch.cat(
                     [
-                        self.v_slice(v, 0, self.attention_sink_size),
+                        self.v_slice(v, 0, self.kv_init_size),
                         self.v_slice(
                             v,
-                            seq_len - self.attention_sink_window_size + num_coming,
+                            seq_len - self.kv_window_size + num_coming,
                             seq_len,
                         ),
                     ],

@@ -4,9 +4,8 @@ from typing import Callable, Optional
 from transformers import PreTrainedModel
 from transformers.utils import logging
 
-from attention_sinks.attention_sink_kv_cache import AttentionSinkKVCache
 from attention_sinks.attention_merge_kv_cache import AttentionMergeKVCache 
-from attention_sinks.generation.utils import _update_model_kwargs_for_generation
+from attention_merge.generation.utils import _update_model_kwargs_for_generation
 import IPython
 
 logger = logging.get_logger(__name__)
@@ -51,10 +50,10 @@ KV_DIM_MAPPING = {
 
 class InjectAttentionSinksMixin:
     @classmethod
-    def from_pretrained(self, pretrained_model_name_or_path,  *model_args, **kwargs):
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         # Separate Attention Sink kwargs from regular kwargs
-        kv_kwargs = {key: value for key, value in kwargs.items() if key.startswith("kv")}
-        for key in kv_kwargs:
+        attention_sink_kwargs = {key: value for key, value in kwargs.items() if key.startswith("attention_sink")}
+        for key in attention_sink_kwargs:
             kwargs.pop(key)
 
         model = super().from_pretrained(
@@ -69,16 +68,16 @@ class InjectAttentionSinksMixin:
             )
 
         # Enable position shifting attention
-        call_count = self._inject_pos_shift_attention(model)
+        call_count = cls._inject_pos_shift_attention(model)
         if call_count is not None:
             logger.warn(
-                f"[KV] Injected Position Shifting into {call_count} attention class{'es' if call_count != 1 else ''}."
+                f"[Attention Sinks] Injected Position Shifting into {call_count} attention class{'es' if call_count != 1 else ''}."
             )
 
         # Inject the Attention Sink KV Cache to the model
-        call_count = self._inject_new_kv_cache(model, **kv_kwargs)
+        call_count = cls._inject_attention_sink_kv_cache(model, **attention_sink_kwargs)
         logger.warn(
-            f"[KV] Injected {kv_kwargs['kv_type']} KV Cache into {call_count} model class{'es' if call_count != 1 else ''}."
+            f"[Attention Sinks] Injected Attention Sink KV Cache into {call_count} model class{'es' if call_count != 1 else ''}."
         )
 
         # Overwrite broken model kwargs, prevents indexing error when generating
@@ -89,7 +88,7 @@ class InjectAttentionSinksMixin:
         return model
 
     @classmethod
-    def _inject_pos_shift_attention(self, model: PreTrainedModel) -> Optional[int]:
+    def _inject_pos_shift_attention(cls, model: PreTrainedModel) -> Optional[int]:
         model_type = model.config.model_type
 
         from attention_sinks.models import (
@@ -123,38 +122,35 @@ class InjectAttentionSinksMixin:
         def overwrite_forward(module) -> None:
             module.forward = types.MethodType(ATTENTION_FORWARD_MAPPING[model_type], module)
 
-        return self._call_modules_by_name(model, ATTENTION_NAME_MAPPING[model_type], overwrite_forward)
+        return cls._call_modules_by_name(model, ATTENTION_NAME_MAPPING[model_type], overwrite_forward)
 
     @classmethod
-    def _inject_new_kv_cache(self, model, **kv_kwargs) -> int:
+    def _inject_attention_sink_kv_cache(cls, model, **attention_merge_kwargs) -> int:
         model_type = model.config.model_type
-        kv_kwargs["k_seq_dim"], kv_kwargs["v_seq_dim"] = KV_DIM_MAPPING[model_type]
+        attention_merge_kwargs["k_seq_dim"], attention_merge_kwargs["v_seq_dim"] = KV_DIM_MAPPING[model_type]
 
         def overwrite_forward(module):
             # Create the new cache
-            if kv_kwargs['kv_type'] == 'pitome':
-                module.new_kv_cache = AttentionMergeKVCache(**kv_kwargs)
-            else:
-                module.new_kv_cache = AttentionSinkKVCache(**kv_kwargs)
+            module.attention_merge_kv_cache = AttentionMergeKVCache(**attention_merge_kwargs)
             # Keep track of the old forward method, we need it in the wrapped one
             old_forward = module.forward
 
             # Wrap the forward by overriding the past_key_values using the cache
             def wrapped_forward(self, *args, **kwargs):
                 outputs = old_forward(*args, **kwargs)
-                outputs.past_key_values = self.new_kv_cache(outputs.past_key_values)
+                outputs.past_key_values = self.attention_merge_kv_cache(outputs.past_key_values)
                 return outputs
 
             module.forward = types.MethodType(wrapped_forward, module)
 
-        return self._call_modules_by_name(model, MODEL_NAME_MAPPING[model_type], overwrite_forward)
+        return cls._call_modules_by_name(model, MODEL_NAME_MAPPING[model_type], overwrite_forward)
     
     
 
     @classmethod
-    def _call_modules_by_name(self, module, target_name: str, func: Callable) -> int:
+    def _call_modules_by_name(cls, module, target_name: str, func: Callable) -> int:
         if module.__class__.__name__ == target_name:
             func(module)
             return 1
 
-        return sum(self._call_modules_by_name(module, target_name, func) for module in module.children())
+        return sum(cls._call_modules_by_name(module, target_name, func) for module in module.children())

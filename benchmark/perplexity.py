@@ -25,6 +25,7 @@ from datasets import load_dataset
 from torch.nn import CrossEntropyLoss
 from tqdm import tqdm
 from transformers import AutoTokenizer
+import wandb
 
 
 def compute_perplexity(
@@ -77,6 +78,13 @@ def compute_perplexity(
             logs["overall_ppl"].append(torch.tensor(logs["nll"]).mean().exp().item())
             logs["cuda_vram_allocated"].append(torch.cuda.memory_allocated(0) / 1024 / 1024 / 1024)  # in GB
             logs["latency"].append(time.time() - start_t)
+
+            wandb.log({
+                'nll': neg_log_likelihood.item(),
+                'ppl': perplexity.item(),
+                'cuda_vram': torch.cuda.memory_allocated(0) / 1024 / 1024 / 1024, 
+                'latency': time.time() - start_t
+            })
             if num_processed_tokens % 10 == 0:
                 try:
                     pd.DataFrame(logs).to_csv(output_file, index=False)
@@ -94,7 +102,7 @@ def main():
     parser = argparse.ArgumentParser()
     # Which experiment to run?
     parser.add_argument(
-        "--experiment", choices=["attention_sinks", "transformers", "windowed"], default="attention_sinks"
+        "--experiment", choices=["sink", "baseline", "windowed", "pitome"], default="sink"
     )
 
     # Model args
@@ -119,25 +127,35 @@ def main():
 
     # Attention Sinks-only settings
     # Attention Sink window size is calculated with args.window_size - args.attention_sink_size
-    parser.add_argument("--attention_sink_size", type=int, default=4)
+    parser.add_argument("--init_size", type=int, default=4)
 
     args = parser.parse_args()
 
     # Initialize the model, either via transformers or via attention_sinks
-    if args.experiment == "transformers":
+    if args.experiment == "baseline":
         from transformers import AutoModelForCausalLM
     else:
         from attention_sinks import AutoModelForCausalLM
     kwargs = {}
-    if args.experiment == "attention_sinks":
+    if args.experiment == "sink":
         kwargs = {
-            "attention_sink_size": args.attention_sink_size,
-            "attention_sink_window_size": args.window_size - args.attention_sink_size,  # default: 1020
+            "kv_init_size": args.init_size,
+            "kv_window_size": args.window_size - args.init_size,  # default: 1020
+            "kv_type": "sink"
+        }
+    elif args.experiment == "pitome":
+        kwargs = {
+            "kv_init_size": args.init_size,
+            "kv_window_size": args.window_size - args.init_size,  # default: 1020
+            "kv_type": 'pitome',
+            "kv_ratio": 0.7,  
+            "kv_sigma": 0.25, 
         }
     elif args.experiment == "windowed":
         kwargs = {
-            "attention_sink_size": 0,
-            "attention_sink_window_size": args.window_size,
+            "kv_init_size": 0,
+            "kv_type": 'windowed',
+            "kv_window_size": args.window_size,
         }
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
@@ -152,6 +170,14 @@ def main():
 
     # Set up the dataset
     dataset = load_dataset(args.dataset_name, args.task, split=args.split, streaming=True)
+    wandb.init(
+        project="kv_cache", 
+        name=args.experiment, 
+        config={
+            "window_size": args.window_size,
+            "init_size": args.init_size,
+        }
+    )
 
     compute_perplexity(
         model,
